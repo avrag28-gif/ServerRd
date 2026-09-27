@@ -145,7 +145,7 @@ jobs:
 
           $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
           if (-not (Test-Path $tailscale)) {
-            $tailscale = Join-Path $env:ProgramFiles(x86) "Tailscale\tailscale.exe"
+            $tailscale = Join-Path ${env:ProgramFiles(x86)} "Tailscale\tailscale.exe"
           }
           if (-not (Test-Path $tailscale)) { throw "Tailscale executable was not found." }
 
@@ -161,7 +161,7 @@ jobs:
         run: |
           $ErrorActionPreference = "SilentlyContinue"
           $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          if (-not (Test-Path $tailscale)) { $tailscale = Join-Path $env:ProgramFiles(x86) "Tailscale\tailscale.exe" }
+          if (-not (Test-Path $tailscale)) { $tailscale = Join-Path ${env:ProgramFiles(x86)} "Tailscale\tailscale.exe" }
 
           Write-Host "=== TAILSCALE IPv4 ==="
           if (Test-Path $tailscale) { & $tailscale ip -4 }
