@@ -109,18 +109,16 @@ jobs:
           New-ItemProperty -Path $rdp -Name fDisableCcm -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name UseWddmGraphicsDisplayDriver -PropertyType DWord -Value 1 -Force | Out-Null
 
-          # Keep RDP compression/modern graphics enabled.
+          # Use the lower-overhead RDP graphics path.
+          # AVC444 can increase bandwidth/CPU load on a remote session, so keep it off.
           New-ItemProperty -Path $rdp -Name UseRdpCompression -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name AVC444ModePreferred -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdp -Name AVC444ModePreferred -PropertyType DWord -Value 0 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name AVCHardwareEncodePreferred -PropertyType DWord -Value 1 -Force | Out-Null
+          Remove-ItemProperty -Path $rdp -Name SelectTransport -ErrorAction SilentlyContinue
 
-          # Prefer the modern UDP transport when available; TCP remains as fallback.
-          New-ItemProperty -Path $rdp -Name SelectTransport -PropertyType DWord -Value 0 -Force | Out-Null
-
-          # Hardware-accelerated GPU scheduling when the runner driver supports it.
-          $graphics = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers"
-          New-Item -Path $graphics -Force | Out-Null
-          New-ItemProperty -Path $graphics -Name HwSchMode -PropertyType DWord -Value 2 -Force | Out-Null
+          # Do not force HAGS on a virtual GitHub runner; it can add overhead or do nothing.
+          $graphics = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+          Remove-ItemProperty -Path $graphics -Name HwSchMode -ErrorAction SilentlyContinue
 
           # Disable Windows transparency/visual effects for the interactive account.
           $personalize = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
