@@ -1,10 +1,22 @@
-name: Windows RDP Smooth 6H
+name: Windows RDP Smooth 7D
 
 on:
   workflow_dispatch:
+    inputs:
+      start:
+        description: 'ISO timestamp of the first chained run (set automatically; leave blank for a new session)'
+        type: string
+        required: false
+        default: ''
 
+# GitHub hard-caps every hosted job at 6 hours, so a multi-day session is built
+# as a CHAIN: each run keeps RDP alive for ~5h20m, then dispatches the next run
+# (needs actions: write) passing along the original start timestamp. The chain
+# stops after RDP_DAYS days (repository variable, default 7; set 0 to stop now).
+# Overall session = N * ~5.7h cycles, each cycle has a ~3-5 minute RDP gap.
 permissions:
   contents: read
+  actions: write
 
 jobs:
   rdp:
@@ -176,8 +188,8 @@ jobs:
             "lfsvc", "WerSvc", "TabletInputService", "SCardSvr", "BluetoothUserService",
             "RemoteRegistry", "SharedAccess", "WbioSrvc", "SEMgrSvc", "SensorService",
             "SensrSvc", "RemoteAccess", "PrintNotify", "Spooler",
-            # Push notifications, file history, program-compat telemetry, data sharing:
-            # none of them matter inside a 6-hour throwaway RDP session.
+            # push notifications, file history, program-compat telemetry, data sharing:
+            # none of them matter inside a throwaway 6-hour RDP session.
             "WpnService", "WpnUserService", "fhsvc", "PcaSvc", "DsSvc", "wisvc"
           )
           foreach ($svc in $services) {
@@ -553,6 +565,26 @@ jobs:
             '  exit 1',
             '}',
             '',
+            '# The session is chained: every ~5h20m the runner VM is recreated with a new',
+            '# name and IP. Discover the newest live github-serverRd node instead of',
+            '# trusting the values baked into this file at download time.',
+            '$j = & $ts status --json 2>$null | Out-String | ConvertFrom-Json',
+            '$peer = $null',
+            'if ($j -and $j.Peer) {',
+            '  $peer = $j.Peer.PSObject.Properties.Value |',
+            '    Where-Object { $_.DNSName -like "github-serverRd*" -and ($_.Online -or $_.Status -eq "online") } |',
+            '    Select-Object -First 1',
+            '}',
+            'if ($peer) {',
+            '  $RunnerHost = $peer.DNSName.TrimEnd(".")',
+            '  $v4 = $peer.TailscaleIPs | Where-Object { $_ -match "^[0-9]+\." } | Select-Object -First 1',
+            '  if ($v4) { $RunnerIp = $v4 }',
+            '  Write-Host ("Live runner found: " + $RunnerHost + " (" + $RunnerIp + ")") -ForegroundColor Green',
+            '} else {',
+            '  Write-Host "No live github-serverRd node found yet - is the workflow running?" -ForegroundColor Yellow',
+            '  Write-Host ("Falling back to baked values: " + $RunnerHost + " (" + $RunnerIp + ")")',
+            '}',
+            '',
             'Write-Host ""',
             'Write-Host "--- netcheck ---" -ForegroundColor Cyan',
             '$net = (& $ts netcheck 2>&1 | Out-String)',
@@ -599,6 +631,14 @@ jobs:
             '## ServerRd is online',
             '',
             'Remote Desktop listens on the Tailscale address above, port **3389**, user **rdpuser**.',
+            '',
+            '### This is a chained multi-day session',
+            'GitHub kills every hosted job after 6 hours, so this run re-dispatches itself',
+            'every ~5h20m. The session keeps going for `RDP_DAYS` days (default **7**, set',
+            'the repository variable to `0` to stop after the current run). Between runs',
+            'expect a **3-5 minute gap** while the new VM boots: just re-run',
+            '`serverRd-connect.ps1` (it auto-discovers the new runner) or grab the fresh',
+            '`.rdp` profile from the newest run.',
             '',
             '### Step 1: run the diagnostic on your own PC',
             'Download `serverRd-connect.ps1` from the job artifacts and run it in PowerShell.',
@@ -696,21 +736,65 @@ jobs:
             FreeRAM_GB = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
           } | Format-List
 
-      - name: Keep RDP alive for 6 hours
+      - name: Keep RDP alive (5h20m window, under the 6h hosted cap)
         shell: pwsh
         run: |
-          Write-Host "ServerRd RDP is ready for 6 hours."
+          Write-Host "ServerRd RDP is ready. Chained multi-day session - each run holds for ~5h20m."
           Write-Host "RDP username: rdpuser"
           Write-Host "Use the tuned .rdp profile from the step summary for the lowest latency."
           # Lightweight heartbeat only. Heavy WMI/CIM polling every minute was
           # adding measurable CPU/IO overhead to the box we are trying to keep fast.
           # The listener is re-checked every 10 minutes instead of every minute.
-          for ($i = 1; $i -le 360; $i++) {
+          # 320 minutes leaves headroom for the ~3-5 min of setup steps above so
+          # the job always finishes before GitHub's hard 360-minute kill.
+          for ($i = 1; $i -le 320; $i++) {
             if ($i -eq 1 -or $i % 10 -eq 0) {
               $service = Get-Service -Name TermService -ErrorAction SilentlyContinue
               $state = if ($service) { $service.Status } else { "Unknown" }
               $listening = [bool](Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)
-              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] minute $i/360 | TermService=$state | RDP listening=$listening"
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] minute $i/320 | TermService=$state | RDP listening=$listening"
             }
             Start-Sleep -Seconds 60
           }
+
+      - name: Chain the next run for the multi-day session
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repo = "${{ github.repository }}"
+          $ref  = "${{ github.ref_name }}"
+
+          # Session length in days, controlled by the RDP_DAYS repository variable.
+          $days = 7.0
+          if ("${{ vars.RDP_DAYS }}") { $days = [double]"${{ vars.RDP_DAYS }}" }
+          if ($days -le 0) {
+            Write-Host "RDP_DAYS=0 - stopping the chain. This was the last run."
+            exit 0
+          }
+
+          # The original start time survives across chained runs via the input.
+          $start = "${{ inputs.start }}"
+          if (-not $start) { $start = "${{ github.run_started_at }}" }
+          try {
+            $started = [datetimeoffset]::Parse($start, [Globalization.CultureInfo]::InvariantCulture)
+          } catch {
+            $started = [datetimeoffset]::Parse("${{ github.run_started_at }}")
+          }
+          $elapsed = [datetimeoffset]::UtcNow - $started
+          if ($elapsed.TotalHours -ge (24 * $days)) {
+            Write-Host ("Session goal reached: {0:N1}h of {1:N0}h. Chain stopped." -f $elapsed.TotalHours, (24 * $days))
+            exit 0
+          }
+
+          $headers = @{
+            Authorization            = "token $env:GITHUB_TOKEN"
+            Accept                   = "application/vnd.github+json"
+            "X-GitHub-Api-Version"  = "2022-11-28"
+          }
+          $body = @{ ref = $ref; inputs = @{ start = $started.ToString('o') } } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post `
+            -Uri "https://api.github.com/repos/$repo/actions/workflows/vm-test.yml/dispatches" `
+            -Headers $headers -Body $body -ContentType "application/json"
+          Write-Host ("Chained the next run ({0:N1}h / {1:N0}h elapsed). New runner boots in ~3-5 minutes." -f $elapsed.TotalHours, (24 * $days))
