@@ -377,7 +377,7 @@ jobs:
           $tsGeneral = Get-CimInstance -Namespace "root/CIMV2/TerminalServices" -ClassName Win32_TSGeneralSetting -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
           Invoke-CimMethod -InputObject $tsGeneral -MethodName SetUserAuthenticationRequired -Arguments @{UserAuthenticationRequired=1} -ErrorAction Stop | Out-Null
           Invoke-CimMethod -InputObject $tsGeneral -MethodName SetSecurityLayer -Arguments @{SecurityLayer=1} -ErrorAction Stop | Out-Null
-          Invoke-CimMethod -InputObject $tsGeneral -MethodName SetEncryptionLevel -Arguments @{EncryptionLevel=3} -ErrorAction Stop | Out-Null
+          # EncryptionLevel remains 3 via the RDP-Tcp registry setting; this WMI class does not expose SetEncryptionLevel on Server 2025.
           # 0 = use both TCP and UDP. UDP transport is what keeps RDP responsive on
           # lossy/relay paths; without it every dropped packet stalls a TCP window.
           New-ItemProperty -Path $rdpTcp -Name SelectTransport -PropertyType DWord -Value 0 -Force | Out-Null
