@@ -348,6 +348,9 @@ jobs:
 
           $terminalServer = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
           New-ItemProperty -Path $terminalServer -Name fDenyTSConnections -PropertyType DWord -Value 0 -Force | Out-Null
+          # Explicitly enable RDP through Terminal Services management API.
+          $ts = Get-CimInstance -Namespace "root/CIMV2/TerminalServices" -ClassName Win32_TerminalServiceSetting -ErrorAction SilentlyContinue
+          if ($ts) { Invoke-CimMethod -InputObject $ts -MethodName SetAllowTSConnections -Arguments @{AllowTSConnections=1;ModifyFirewallException=1} -ErrorAction SilentlyContinue | Out-Null }
 
           $rdpTcp = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
           New-Item -Path $rdpTcp -Force | Out-Null
