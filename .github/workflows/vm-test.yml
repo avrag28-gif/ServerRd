@@ -1,4 +1,4 @@
-name: Windows RDP Ultra Lite 6H
+name: Windows RDP Stable Performance 6H
 
 on:
   workflow_dispatch:
@@ -16,144 +16,75 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
-          Write-Host "=== WINDOWS ==="
+          Write-Host "=== SYSTEM ==="
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
           Write-Host "=== CPU ==="
-          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
           Write-Host "=== RAM ==="
           $cs = Get-CimInstance Win32_ComputerSystem
-          [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+          [pscustomobject]@{
+            TotalGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+          } | Format-List
           Write-Host "=== GPU ==="
-          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, VideoModeDescription, AdapterRAM, VideoProcessor, Status | Format-List
-          Write-Host "=== DISPLAY DRIVER / ACCELERATION ==="
-          Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, VideoProcessor, PNPDeviceID | Format-List
-          Write-Host "=== RDP GRAPHICS CAPABILITIES ==="
-          Get-CimInstance -Namespace root\cimv2\TerminalServices -ClassName Win32_TSGeneralSetting -ErrorAction SilentlyContinue | Select-Object TerminalName, PolicySourceGraphicsMode, PolicySourceColorDepth, ColorDepth | Format-List
-          Write-Host "=== DIRECTX ==="
-          if (Get-Command dxdiag -ErrorAction SilentlyContinue) {
-            $dx = Join-Path $env:TEMP "dxdiag.txt"
-            dxdiag /t $dx | Out-Null
-            Select-String -Path $dx -Pattern "Card name:|Display Memory:|Dedicated Memory:|Shared Memory:|Current Mode:" -Context 0,0
-          }
-          Write-Host "=== NETWORK ADAPTER ==="
-          Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object Name, InterfaceDescription, LinkSpeed | Format-List
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion, VideoModeDescription, AdapterRAM, VideoProcessor, Status |
+            Format-List
+          Write-Host "=== NETWORK ==="
+          Get-NetAdapter | Where-Object Status -eq "Up" |
+            Select-Object Name, InterfaceDescription, LinkSpeed, Status |
+            Format-List
 
-      - name: Ultra-lite Windows and RDP tuning
+      - name: Stable performance configuration
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
 
-          # Maximum CPU performance while the runner is plugged in.
+          # Use Windows High Performance without disabling normal Windows components.
           powercfg /setactive SCHEME_MIN
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change hibernate-timeout-ac 0
 
-          # Processor scheduling: foreground interactive programs.
-          $proc = "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl"
-          New-Item -Path $proc -Force | Out-Null
-          New-ItemProperty -Path $proc -Name Win32PrioritySeparation -PropertyType DWord -Value 38 -Force | Out-Null
+          # Keep Windows foreground/background scheduling at its normal Windows setting.
+          # Do not force undocumented priority values that can make other software less responsive.
+          $priority = "HKLM:SYSTEMCurrentControlSetControlPriorityControl"
+          Remove-ItemProperty -Path $priority -Name Win32PrioritySeparation -ErrorAction SilentlyContinue
 
-          # Disable only nonessential background services for this ephemeral session.
-          $services = @(
-            "DiagTrack",
-            "dmwappushservice",
-            "MapsBroker",
-            "SysMain",
-            "WSearch",
-            "Fax",
-            "RetailDemo",
-            "XblAuthManager",
-            "XblGameSave",
-            "XboxGipSvc",
-            "XboxNetApiSvc",
-            "lfsvc"
-          )
-          foreach ($svc in $services) {
-            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
-          }
-
-          # Remove optional consumer packages only.
-          $patterns = @(
-            "*Xbox*",
-            "*Solitaire*",
-            "*BingNews*",
-            "*BingWeather*",
-            "*ZuneMusic*",
-            "*ZuneVideo*",
-            "*GetHelp*",
-            "*Getstarted*",
-            "*Microsoft.People*",
-            "*Clipchamp*"
-          )
-          foreach ($pattern in $patterns) {
-            Get-AppxPackage -AllUsers $pattern |
-              Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-          }
-
-          # Stop optional user-facing background processes if present.
-          $processes = @(
-            "OneDrive",
-            "Teams",
-            "ms-teams",
-            "Widgets",
-            "GameBar",
-            "GameBarFTServer",
-            "SearchHost",
-            "SearchIndexer",
-            "YourPhone"
-          )
-          foreach ($procName in $processes) {
-            Get-Process -Name $procName -ErrorAction SilentlyContinue |
-              Stop-Process -Force -ErrorAction SilentlyContinue
-          }
-
-          # RDP policy: reduce pixels and desktop effects that consume bandwidth.
-          $rdp = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          # RDP: reduce unnecessary visual bandwidth while preserving normal Windows functionality.
+          $rdp = "HKLM:SOFTWAREPoliciesMicrosoftWindows NTTerminal Services"
           New-Item -Path $rdp -Force | Out-Null
-
           New-ItemProperty -Path $rdp -Name fDisableWallpaper -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name fDisableFullWindowDrag -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name fDisableMenuAnims -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name fDisableCursorSetting -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableCdm -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableCcm -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name UseWddmGraphicsDisplayDriver -PropertyType DWord -Value 1 -Force | Out-Null
 
-          # Use the lower-overhead RDP graphics path.
-          # AVC444 can increase bandwidth/CPU load on a remote session, so keep it off.
-          New-ItemProperty -Path $rdp -Name UseRdpCompression -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name AVC444ModePreferred -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name AVCHardwareEncodePreferred -PropertyType DWord -Value 1 -Force | Out-Null
+          # Remove experimental/forced codec and transport overrides.
+          Remove-ItemProperty -Path $rdp -Name UseRdpCompression -ErrorAction SilentlyContinue
+          Remove-ItemProperty -Path $rdp -Name AVC444ModePreferred -ErrorAction SilentlyContinue
+          Remove-ItemProperty -Path $rdp -Name AVCHardwareEncodePreferred -ErrorAction SilentlyContinue
           Remove-ItemProperty -Path $rdp -Name SelectTransport -ErrorAction SilentlyContinue
 
-          # Do not force HAGS on a virtual GitHub runner; it can add overhead or do nothing.
-          $graphics = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+          # Do not force Hardware Accelerated GPU Scheduling on a virtual GPU.
+          $graphics = "HKLM:SYSTEMCurrentControlSetControlGraphicsDrivers"
           Remove-ItemProperty -Path $graphics -Name HwSchMode -ErrorAction SilentlyContinue
 
-          # Disable Windows transparency/visual effects for the interactive account.
-          $personalize = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+          # Keep the Windows desktop visually lightweight without removing applications.
+          $personalize = "HKCU:SoftwareMicrosoftWindowsCurrentVersionThemesPersonalize"
           New-Item -Path $personalize -Force | Out-Null
           New-ItemProperty -Path $personalize -Name EnableTransparency -PropertyType DWord -Value 0 -Force | Out-Null
 
-          $visual = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+          $visual = "HKCU:SoftwareMicrosoftWindowsCurrentVersionExplorerVisualEffects"
           New-Item -Path $visual -Force | Out-Null
           New-ItemProperty -Path $visual -Name VisualFXSetting -PropertyType DWord -Value 2 -Force | Out-Null
 
-          # Disable nonessential Windows notifications and suggestions for the session.
-          $cloud = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+          # Disable only promotional/suggestion content; leave Windows services and apps intact.
+          $cloud = "HKCU:SoftwareMicrosoftWindowsCurrentVersionContentDeliveryManager"
           New-Item -Path $cloud -Force | Out-Null
           New-ItemProperty -Path $cloud -Name SubscribedContent-338389Enabled -PropertyType DWord -Value 0 -Force | Out-Null
           New-ItemProperty -Path $cloud -Name SubscribedContent-338388Enabled -PropertyType DWord -Value 0 -Force | Out-Null
 
-          # Clean temporary files before the interactive session starts.
-          Get-ChildItem "$env:TEMP\*" -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "C:\Windows\Temp\*" -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-          Write-Host "Ultra-lite Windows/RDP tuning complete."
+          Write-Host "Stable performance configuration complete."
 
       - name: Configure RDP
         shell: pwsh
@@ -178,10 +109,10 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "rdpuser" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser" -ErrorAction SilentlyContinue
 
-          $terminalServer = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+          $terminalServer = "HKLM:SYSTEMCurrentControlSetControlTerminal Server"
           Set-ItemProperty -Path $terminalServer -Name fDenyTSConnections -Value 0
 
-          $rdpTcp = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+          $rdpTcp = "HKLM:SYSTEMCurrentControlSetControlTerminal ServerWinStationsRDP-Tcp"
           Set-ItemProperty -Path $rdpTcp -Name UserAuthentication -Value 1
           Set-ItemProperty -Path $rdpTcp -Name SecurityLayer -Value 1
           Set-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -Value 3
@@ -190,7 +121,7 @@ jobs:
           Start-Service -Name TermService
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          Write-Host "RDP configured for rdpuser."
+          Write-Host "RDP configured."
 
       - name: Install and connect Tailscale
         shell: pwsh
@@ -207,7 +138,7 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $installer
           Start-Process -FilePath $installer -ArgumentList "/quiet" -Wait
 
-          $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          $tailscale = Join-Path $env:ProgramFiles "Tailscale	ailscale.exe"
           if (-not (Test-Path $tailscale)) {
             throw "Tailscale executable was not found."
           }
@@ -218,18 +149,19 @@ jobs:
 
           Write-Host "=== TAILSCALE IPv4 ==="
           & $tailscale ip -4
-
           Write-Host "=== TAILSCALE STATUS ==="
           & $tailscale status
 
-      - name: Verify low-overhead RDP state
+      - name: Verify performance state
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
 
           Write-Host "=== TAILSCALE PING ==="
-          $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          if (Test-Path $tailscale) { & $tailscale ping --c 5 --timeout 3s 100.102.42.28 }
+          $tailscale = Join-Path $env:ProgramFiles "Tailscale	ailscale.exe"
+          if (Test-Path $tailscale) {
+            & $tailscale ping --c 5 --timeout 3s 100.102.42.28
+          }
 
           Write-Host "=== RDP LISTENER ==="
           Get-NetTCPConnection -LocalPort 3389 -State Listen |
@@ -246,37 +178,25 @@ jobs:
 
           Write-Host "=== GPU ==="
           Get-CimInstance Win32_VideoController |
-            Select-Object Name, DriverVersion, VideoModeDescription |
+            Select-Object Name, DriverVersion, VideoModeDescription, AdapterRAM, VideoProcessor, Status |
             Format-List
 
           Write-Host "=== RDP POLICY ==="
-          Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" |
-            Select-Object fDisableWallpaper,fDisableFullWindowDrag,fDisableMenuAnims,UseWddmGraphicsDisplayDriver,UseRdpCompression,AVC444ModePreferred,AVCHardwareEncodePreferred,SelectTransport |
+          Get-ItemProperty "HKLM:SOFTWAREPoliciesMicrosoftWindows NTTerminal Services" |
+            Select-Object fDisableWallpaper,fDisableFullWindowDrag,fDisableMenuAnims,fDisableCursorSetting,UseWddmGraphicsDisplayDriver,UseRdpCompression,AVC444ModePreferred,AVCHardwareEncodePreferred,SelectTransport |
             Format-List
 
       - name: Keep RDP alive for 6 hours
         shell: pwsh
         run: |
-          Write-Host "ServerRd optimized Windows RDP is running."
+          Write-Host "ServerRd stable-performance Windows RDP is running."
           Write-Host "RDP username: rdpuser"
 
           for ($i = 1; $i -le 360; $i++) {
-            $rbx = Get-Process -Name "RobloxStudioBeta" -ErrorAction SilentlyContinue
-            if ($rbx) {
-              try {
-                if ($rbx.PriorityClass -ne "AboveNormal") {
-                  $rbx.PriorityClass = "AboveNormal"
-                  Write-Host "Roblox Studio detected -> AboveNormal priority."
-                }
-              } catch {
-                Write-Host "Roblox priority adjustment skipped: $($_.Exception.Message)"
-              }
-              $cpu = [math]::Round(($rbx | Measure-Object CPU -Sum).Sum, 1)
-              $ram = [math]::Round(($rbx.WorkingSet64 / 1MB), 0)
-              Write-Host "Roblox Studio: PID=$($rbx.Id) CPUSeconds=$cpu RAM_MB=$ram Priority=$($rbx.PriorityClass)"
-            } else {
-              Write-Host "Roblox Studio: not running"
-            }
-            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360"
+            $cpu = (Get-Counter 'Processor(_Total)% Processor Time' -ErrorAction SilentlyContinue).CounterSamples.CookedValue
+            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            $free = if ($os) { [math]::Round($os.FreePhysicalMemory / 1MB, 1) } else { 0 }
+
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360 | CPU=$([math]::Round($cpu,1))% | FreeRAM=$free GB"
             Start-Sleep -Seconds 60
           }
