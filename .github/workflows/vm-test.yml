@@ -39,19 +39,19 @@ jobs:
         run: |
           $ErrorActionPreference = "SilentlyContinue"
 
-          # Use Windows High Performance without disabling normal Windows components.
           powercfg /setactive SCHEME_MIN
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change hibernate-timeout-ac 0
 
-          # Keep Windows foreground/background scheduling at its normal Windows setting.
-          # Do not force undocumented priority values that can make other software less responsive.
-          $priority = "HKLM:SYSTEMCurrentControlSetControlPriorityControl"
+          $bs = [char]92
+
+          # Restore normal Windows priority scheduling if an older run changed it.
+          $priority = "HKLM:$bs" + "SYSTEM$bs" + "CurrentControlSet$bs" + "Control$bs" + "PriorityControl"
           Remove-ItemProperty -Path $priority -Name Win32PrioritySeparation -ErrorAction SilentlyContinue
 
-          # RDP: reduce unnecessary visual bandwidth while preserving normal Windows functionality.
-          $rdp = "HKLM:SOFTWAREPoliciesMicrosoftWindows NTTerminal Services"
+          # Lightweight RDP visuals; keep Windows components and applications intact.
+          $rdp = "HKLM:$bs" + "SOFTWARE$bs" + "Policies$bs" + "Microsoft$bs" + "Windows NT$bs" + "Terminal Services"
           New-Item -Path $rdp -Force | Out-Null
           New-ItemProperty -Path $rdp -Name fDisableWallpaper -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name fDisableFullWindowDrag -PropertyType DWord -Value 1 -Force | Out-Null
@@ -59,27 +59,24 @@ jobs:
           New-ItemProperty -Path $rdp -Name fDisableCursorSetting -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdp -Name UseWddmGraphicsDisplayDriver -PropertyType DWord -Value 1 -Force | Out-Null
 
-          # Remove experimental/forced codec and transport overrides.
           Remove-ItemProperty -Path $rdp -Name UseRdpCompression -ErrorAction SilentlyContinue
           Remove-ItemProperty -Path $rdp -Name AVC444ModePreferred -ErrorAction SilentlyContinue
           Remove-ItemProperty -Path $rdp -Name AVCHardwareEncodePreferred -ErrorAction SilentlyContinue
           Remove-ItemProperty -Path $rdp -Name SelectTransport -ErrorAction SilentlyContinue
 
-          # Do not force Hardware Accelerated GPU Scheduling on a virtual GPU.
-          $graphics = "HKLM:SYSTEMCurrentControlSetControlGraphicsDrivers"
+          # Do not force HAGS on the virtual GPU.
+          $graphics = "HKLM:$bs" + "SYSTEM$bs" + "CurrentControlSet$bs" + "Control$bs" + "GraphicsDrivers"
           Remove-ItemProperty -Path $graphics -Name HwSchMode -ErrorAction SilentlyContinue
 
-          # Keep the Windows desktop visually lightweight without removing applications.
-          $personalize = "HKCU:SoftwareMicrosoftWindowsCurrentVersionThemesPersonalize"
+          $personalize = "HKCU:$bs" + "Software$bs" + "Microsoft$bs" + "Windows$bs" + "CurrentVersion$bs" + "Themes$bs" + "Personalize"
           New-Item -Path $personalize -Force | Out-Null
           New-ItemProperty -Path $personalize -Name EnableTransparency -PropertyType DWord -Value 0 -Force | Out-Null
 
-          $visual = "HKCU:SoftwareMicrosoftWindowsCurrentVersionExplorerVisualEffects"
+          $visual = "HKCU:$bs" + "Software$bs" + "Microsoft$bs" + "Windows$bs" + "CurrentVersion$bs" + "Explorer$bs" + "VisualEffects"
           New-Item -Path $visual -Force | Out-Null
           New-ItemProperty -Path $visual -Name VisualFXSetting -PropertyType DWord -Value 2 -Force | Out-Null
 
-          # Disable only promotional/suggestion content; leave Windows services and apps intact.
-          $cloud = "HKCU:SoftwareMicrosoftWindowsCurrentVersionContentDeliveryManager"
+          $cloud = "HKCU:$bs" + "Software$bs" + "Microsoft$bs" + "Windows$bs" + "CurrentVersion$bs" + "ContentDeliveryManager"
           New-Item -Path $cloud -Force | Out-Null
           New-ItemProperty -Path $cloud -Name SubscribedContent-338389Enabled -PropertyType DWord -Value 0 -Force | Out-Null
           New-ItemProperty -Path $cloud -Name SubscribedContent-338388Enabled -PropertyType DWord -Value 0 -Force | Out-Null
@@ -92,6 +89,7 @@ jobs:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
+          $bs = [char]92
 
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
             throw "Missing GitHub Actions secret: RDP_PASSWORD"
@@ -109,10 +107,10 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "rdpuser" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser" -ErrorAction SilentlyContinue
 
-          $terminalServer = "HKLM:SYSTEMCurrentControlSetControlTerminal Server"
+          $terminalServer = "HKLM:$bs" + "SYSTEM$bs" + "CurrentControlSet$bs" + "Control$bs" + "Terminal Server"
           Set-ItemProperty -Path $terminalServer -Name fDenyTSConnections -Value 0
 
-          $rdpTcp = "HKLM:SYSTEMCurrentControlSetControlTerminal ServerWinStationsRDP-Tcp"
+          $rdpTcp = "HKLM:$bs" + "SYSTEM$bs" + "CurrentControlSet$bs" + "Control$bs" + "Terminal Server$bs" + "WinStations$bs" + "RDP-Tcp"
           Set-ItemProperty -Path $rdpTcp -Name UserAuthentication -Value 1
           Set-ItemProperty -Path $rdpTcp -Name SecurityLayer -Value 1
           Set-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -Value 3
@@ -138,7 +136,8 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $installer
           Start-Process -FilePath $installer -ArgumentList "/quiet" -Wait
 
-          $tailscale = Join-Path $env:ProgramFiles "Tailscale	ailscale.exe"
+          $tailscaleDir = Join-Path $env:ProgramFiles "Tailscale"
+          $tailscale = Join-Path $tailscaleDir "tailscale.exe"
           if (-not (Test-Path $tailscale)) {
             throw "Tailscale executable was not found."
           }
@@ -156,9 +155,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
+          $bs = [char]92
 
           Write-Host "=== TAILSCALE PING ==="
-          $tailscale = Join-Path $env:ProgramFiles "Tailscale	ailscale.exe"
+          $tailscaleDir = Join-Path $env:ProgramFiles "Tailscale"
+          $tailscale = Join-Path $tailscaleDir "tailscale.exe"
           if (Test-Path $tailscale) {
             & $tailscale ping --c 5 --timeout 3s 100.102.42.28
           }
@@ -182,18 +183,22 @@ jobs:
             Format-List
 
           Write-Host "=== RDP POLICY ==="
-          Get-ItemProperty "HKLM:SOFTWAREPoliciesMicrosoftWindows NTTerminal Services" |
+          $rdp = "HKLM:$bs" + "SOFTWARE$bs" + "Policies$bs" + "Microsoft$bs" + "Windows NT$bs" + "Terminal Services"
+          Get-ItemProperty $rdp |
             Select-Object fDisableWallpaper,fDisableFullWindowDrag,fDisableMenuAnims,fDisableCursorSetting,UseWddmGraphicsDisplayDriver,UseRdpCompression,AVC444ModePreferred,AVCHardwareEncodePreferred,SelectTransport |
             Format-List
 
       - name: Keep RDP alive for 6 hours
         shell: pwsh
         run: |
+          $bs = [char]92
+          $counter = "$bs" + "Processor(_Total)" + $bs + "% Processor Time"
+
           Write-Host "ServerRd stable-performance Windows RDP is running."
           Write-Host "RDP username: rdpuser"
 
           for ($i = 1; $i -le 360; $i++) {
-            $cpu = (Get-Counter 'Processor(_Total)% Processor Time' -ErrorAction SilentlyContinue).CounterSamples.CookedValue
+            $cpu = (Get-Counter $counter -ErrorAction SilentlyContinue).CounterSamples.CookedValue
             $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
             $free = if ($os) { [math]::Round($os.FreePhysicalMemory / 1MB, 1) } else { 0 }
 
