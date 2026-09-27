@@ -353,7 +353,7 @@ jobs:
           if ($ts) { Invoke-CimMethod -InputObject $ts -MethodName SetAllowTSConnections -Arguments @{AllowTSConnections=1;ModifyFirewallException=1} -ErrorAction SilentlyContinue | Out-Null }
 
           $rdpTcp = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          New-Item -Path $rdpTcp -Force | Out-Null
+          if (-not (Test-Path $rdpTcp)) { throw "RDP-Tcp registry configuration is missing." }
           New-ItemProperty -Path $rdpTcp -Name UserAuthentication -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name SecurityLayer -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -PropertyType DWord -Value 3 -Force | Out-Null
@@ -367,6 +367,17 @@ jobs:
             Set-Service -Name $svcName -StartupType Automatic -ErrorAction SilentlyContinue
             Start-Service -Name $svcName -ErrorAction SilentlyContinue
           }
+
+          # Configure the actual Terminal Services RDP-Tcp endpoint through WMI/CIM.
+          # Registry flags alone can leave TermService running with no listener.
+          $tsSetting = Get-CimInstance -Namespace "root/CIMV2/TerminalServices" -ClassName Win32_TerminalServiceSetting -ErrorAction Stop
+          $allowResult = Invoke-CimMethod -InputObject $tsSetting -MethodName SetAllowTSConnections -Arguments @{AllowTSConnections=1;ModifyFirewallException=1} -ErrorAction Stop
+          Write-Host ("SetAllowTSConnections ReturnValue={0}" -f $allowResult.ReturnValue)
+
+          $tsGeneral = Get-CimInstance -Namespace "root/CIMV2/TerminalServices" -ClassName Win32_TSGeneralSetting -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+          Invoke-CimMethod -InputObject $tsGeneral -MethodName SetUserAuthenticationRequired -Arguments @{UserAuthenticationRequired=1} -ErrorAction Stop | Out-Null
+          Invoke-CimMethod -InputObject $tsGeneral -MethodName SetSecurityLayer -Arguments @{SecurityLayer=1} -ErrorAction Stop | Out-Null
+          Invoke-CimMethod -InputObject $tsGeneral -MethodName SetEncryptionLevel -Arguments @{EncryptionLevel=3} -ErrorAction Stop | Out-Null
           # 0 = use both TCP and UDP. UDP transport is what keeps RDP responsive on
           # lossy/relay paths; without it every dropped packet stalls a TCP window.
           New-ItemProperty -Path $rdpTcp -Name SelectTransport -PropertyType DWord -Value 0 -Force | Out-Null
@@ -387,7 +398,7 @@ jobs:
           $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
           if (-not $listener) {
             Restart-Service -Name TermService -Force
-            Start-Sleep -Seconds 15
+            Start-Sleep -Seconds 20
             $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
           }
 
