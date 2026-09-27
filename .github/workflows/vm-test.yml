@@ -112,6 +112,8 @@ jobs:
             Remove-ItemProperty -Path $runKey -Name $name -ErrorAction SilentlyContinue
           }
           Write-Host "Background CPU hogs neutralized."
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Apply high-performance tuning
         shell: pwsh
