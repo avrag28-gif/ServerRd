@@ -116,15 +116,31 @@ jobs:
           New-ItemProperty -Path $rdpTcp -Name UserAuthentication -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name SecurityLayer -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -PropertyType DWord -Value 3 -Force | Out-Null
+          New-ItemProperty -Path $rdpTcp -Name PortNumber -PropertyType DWord -Value 3389 -Force | Out-Null
 
           Set-Service -Name TermService -StartupType Automatic
-          if ((Get-Service -Name TermService).Status -ne "Running") { Start-Service -Name TermService }
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-          Restart-Service -Name TermService -Force
-          Start-Sleep -Seconds 3
+          $ts = Get-Service -Name TermService
+          if ($ts.Status -ne "Running") {
+            Start-Service -Name TermService
+            Start-Sleep -Seconds 8
+          }
 
-          if (-not (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)) {
+          $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
+          if (-not $listener) {
+            Restart-Service -Name TermService -Force
+            Start-Sleep -Seconds 10
+            $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
+          }
+
+          if (-not $listener) {
+            Write-Host "=== TERMSERVICE ==="
+            Get-Service TermService | Format-List Name,Status,StartType
+            Write-Host "=== RDP-TCP ==="
+            Get-ItemProperty $rdpTcp | Select-Object UserAuthentication,SecurityLayer,MinEncryptionLevel,PortNumber | Format-List
+            Write-Host "=== LISTENERS ==="
+            Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Sort-Object LocalPort | Select-Object LocalAddress,LocalPort,OwningProcess
             throw "RDP port 3389 is not listening."
           }
           Get-Service TermService | Select-Object Name,Status,StartType | Format-List
