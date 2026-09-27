@@ -24,7 +24,13 @@ jobs:
           $cs = Get-CimInstance Win32_ComputerSystem
           [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
           Write-Host "=== GPU ==="
-          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, VideoModeDescription | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, VideoModeDescription, AdapterRAM, VideoProcessor, Status | Format-List
+          Write-Host "=== DISPLAY DRIVER / ACCELERATION ==="
+          Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, VideoProcessor, PNPDeviceID | Format-List
+          Write-Host "=== RDP GRAPHICS CAPABILITIES ==="
+          Get-CimInstance -Namespace root\cimv2\TerminalServices -ClassName Win32_TSGeneralSetting -ErrorAction SilentlyContinue | Select-Object TerminalName, PolicySourceGraphicsMode, PolicySourceColorDepth, ColorDepth | Format-List
+          Write-Host "=== NETWORK ADAPTER ==="
+          Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object Name, InterfaceDescription, LinkSpeed | Format-List
 
       - name: Ultra-lite Windows and RDP tuning
         shell: pwsh
@@ -214,6 +220,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
+
+          Write-Host "=== TAILSCALE PING ==="
+          $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (Test-Path $tailscale) { & $tailscale ping --c 5 --timeout 3s 100.102.42.28 }
 
           Write-Host "=== RDP LISTENER ==="
           Get-NetTCPConnection -LocalPort 3389 -State Listen |
