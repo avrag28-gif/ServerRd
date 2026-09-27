@@ -357,6 +357,13 @@ jobs:
           New-ItemProperty -Path $rdpTcp -Name PortNumber -PropertyType DWord -Value 3389 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name KeepAliveInterval -PropertyType DWord -Value 1 -Force | Out-Null
           New-ItemProperty -Path $rdpTcp -Name KeepAliveEnable -PropertyType DWord -Value 1 -Force | Out-Null
+          # Ensure the RDP listener components are enabled on Windows Server 2025.
+          # TermService can be running while the RDP-Tcp listener remains disabled.
+          New-ItemProperty -Path $rdpTcp -Name fEnableWinStation -PropertyType DWord -Value 1 -Force | Out-Null
+          foreach ($svcName in @("SessionEnv", "UmRdpService")) {
+            Set-Service -Name $svcName -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name $svcName -ErrorAction SilentlyContinue
+          }
           # 0 = use both TCP and UDP. UDP transport is what keeps RDP responsive on
           # lossy/relay paths; without it every dropped packet stalls a TCP window.
           New-ItemProperty -Path $rdpTcp -Name SelectTransport -PropertyType DWord -Value 0 -Force | Out-Null
@@ -377,7 +384,7 @@ jobs:
           $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
           if (-not $listener) {
             Restart-Service -Name TermService -Force
-            Start-Sleep -Seconds 10
+            Start-Sleep -Seconds 15
             $listener = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
           }
 
