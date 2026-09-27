@@ -19,125 +19,73 @@ jobs:
           Write-Host "=== WINDOWS ==="
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
           Write-Host "=== CPU ==="
-          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
           Write-Host "=== RAM ==="
           $cs = Get-CimInstance Win32_ComputerSystem
-          [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+          Write-Host ("RAM_GB={0}" -f [math]::Round($cs.TotalPhysicalMemory / 1GB, 2))
           Write-Host "=== GPU ==="
           Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, VideoModeDescription, AdapterRAM, VideoProcessor, Status | Format-List
-          Write-Host "=== DISPLAY DRIVER / ACCELERATION ==="
-          Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, VideoProcessor, PNPDeviceID | Format-List
-          Write-Host "=== RDP GRAPHICS CAPABILITIES ==="
-          Get-CimInstance -Namespace root\cimv2\TerminalServices -ClassName Win32_TSGeneralSetting -ErrorAction SilentlyContinue | Select-Object TerminalName, PolicySourceGraphicsMode, PolicySourceColorDepth, ColorDepth | Format-List
-          Write-Host "=== DIRECTX ==="
-          if (Get-Command dxdiag -ErrorAction SilentlyContinue) {
-            $dx = Join-Path $env:TEMP "dxdiag.txt"
-            dxdiag /t $dx | Out-Null
-            Select-String -Path $dx -Pattern "Card name:|Display Memory:|Dedicated Memory:|Shared Memory:|Current Mode:" -Context 0,0
-          }
-          Write-Host "=== NETWORK ADAPTER ==="
+          Write-Host "=== NETWORK ==="
           Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object Name, InterfaceDescription, LinkSpeed | Format-List
 
-      - name: Ultra-lite Windows and RDP tuning
+      - name: Apply balanced maximum-performance tuning
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
-
-          # Maximum CPU performance while the runner is plugged in.
           powercfg /setactive SCHEME_MIN
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change hibernate-timeout-ac 0
 
-          # Processor scheduling: foreground interactive programs.
-          $proc = "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl"
-          New-Item -Path $proc -Force | Out-Null
-          New-ItemProperty -Path $proc -Name Win32PrioritySeparation -PropertyType DWord -Value 38 -Force | Out-Null
+          $priorityKey = "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl"
+          New-Item -Path $priorityKey -Force | Out-Null
+          New-ItemProperty -Path $priorityKey -Name Win32PrioritySeparation -PropertyType DWord -Value 38 -Force | Out-Null
 
-          # Disable only nonessential background services for this ephemeral session.
-          $services = @(
-            "DiagTrack",
-            "dmwappushservice",
-            "MapsBroker",
-            "SysMain",
-            "WSearch",
-            "Fax",
-            "RetailDemo",
-            "XblAuthManager",
-            "XblGameSave",
-            "XboxGipSvc",
-            "XboxNetApiSvc",
-            "lfsvc"
-          )
+          $services = @("DiagTrack","dmwappushservice","MapsBroker","SysMain","WSearch","Fax","RetailDemo","XblAuthManager","XblGameSave","XboxGipSvc","XboxNetApiSvc","lfsvc")
           foreach ($svc in $services) {
             Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
             Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
           }
 
-          # Do not uninstall Windows apps. Stop only optional background processes if present.
-          # This keeps the runner lean without breaking unrelated software.
-          # Stop optional user-facing background processes if present.
-          $processes = @(
-            "OneDrive",
-            "Teams",
-            "ms-teams",
-            "Widgets",
-            "GameBar",
-            "GameBarFTServer",
-            "SearchHost",
-            "SearchIndexer",
-            "YourPhone"
-          )
+          $processes = @("OneDrive","Teams","ms-teams","Widgets","GameBar","GameBarFTServer","YourPhone")
           foreach ($procName in $processes) {
             Get-Process -Name $procName -ErrorAction SilentlyContinue |
               Stop-Process -Force -ErrorAction SilentlyContinue
           }
 
-          # RDP policy: reduce pixels and desktop effects that consume bandwidth.
-          $rdp = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          New-Item -Path $rdp -Force | Out-Null
+          $rdpPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          New-Item -Path $rdpPolicy -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableWallpaper -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableFullWindowDrag -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableMenuAnims -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableCursorSetting -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableCdm -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name fDisableCcm -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name UseWddmGraphicsDisplayDriver -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name UseRdpCompression -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name AVC444ModePreferred -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $rdpPolicy -Name AVCHardwareEncodePreferred -PropertyType DWord -Value 1 -Force | Out-Null
+          Remove-ItemProperty -Path $rdpPolicy -Name SelectTransport -ErrorAction SilentlyContinue
 
-          New-ItemProperty -Path $rdp -Name fDisableWallpaper -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableFullWindowDrag -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableMenuAnims -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableCursorSetting -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableCdm -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name fDisableCcm -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name UseWddmGraphicsDisplayDriver -PropertyType DWord -Value 1 -Force | Out-Null
+          $graphicsKey = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+          Remove-ItemProperty -Path $graphicsKey -Name HwSchMode -ErrorAction SilentlyContinue
 
-          # Use the lower-overhead RDP graphics path.
-          # AVC444 can increase bandwidth/CPU load on a remote session, so keep it off.
-          New-ItemProperty -Path $rdp -Name UseRdpCompression -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name AVC444ModePreferred -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $rdp -Name AVCHardwareEncodePreferred -PropertyType DWord -Value 1 -Force | Out-Null
-          Remove-ItemProperty -Path $rdp -Name SelectTransport -ErrorAction SilentlyContinue
-
-          # Do not force HAGS on a virtual GitHub runner; it can add overhead or do nothing.
-          $graphics = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
-          Remove-ItemProperty -Path $graphics -Name HwSchMode -ErrorAction SilentlyContinue
-
-          # Disable Windows transparency/visual effects for the interactive account.
           $personalize = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
           New-Item -Path $personalize -Force | Out-Null
           New-ItemProperty -Path $personalize -Name EnableTransparency -PropertyType DWord -Value 0 -Force | Out-Null
-
           $visual = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
           New-Item -Path $visual -Force | Out-Null
           New-ItemProperty -Path $visual -Name VisualFXSetting -PropertyType DWord -Value 2 -Force | Out-Null
 
-          # Disable nonessential Windows notifications and suggestions for the session.
           $cloud = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
           New-Item -Path $cloud -Force | Out-Null
-          New-ItemProperty -Path $cloud -Name SubscribedContent-338389Enabled -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $cloud -Name SubscribedContent-338388Enabled -PropertyType DWord -Value 0 -Force | Out-Null
+          @("SubscribedContent-338389Enabled","SubscribedContent-338388Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled") | ForEach-Object {
+            New-ItemProperty -Path $cloud -Name $_ -PropertyType DWord -Value 0 -Force | Out-Null
+          }
 
-          # Clean temporary files before the interactive session starts.
-          Get-ChildItem "$env:TEMP\*" -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "C:\Windows\Temp\*" -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-          Write-Host "Ultra-lite Windows/RDP tuning complete."
+          Get-ChildItem "$env:TEMP\*" -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "C:\Windows\Temp\*" -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "Performance tuning complete."
 
       - name: Configure RDP
         shell: pwsh
@@ -145,36 +93,43 @@ jobs:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            throw "Missing GitHub Actions secret: RDP_PASSWORD"
-          }
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { throw "Missing GitHub Actions secret: RDP_PASSWORD" }
 
           $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-          $existing = Get-LocalUser -Name "rdpuser" -ErrorAction SilentlyContinue
-
-          if ($existing) {
+          $user = Get-LocalUser -Name "rdpuser" -ErrorAction SilentlyContinue
+          if ($user) {
             Set-LocalUser -Name "rdpuser" -Password $securePassword
+            Enable-LocalUser -Name "rdpuser"
           } else {
-            New-LocalUser -Name "rdpuser" -Password $securePassword -AccountNeverExpires -PasswordNeverExpires
+            New-LocalUser -Name "rdpuser" -Password $securePassword -AccountNeverExpires -PasswordNeverExpires -Description "Temporary RDP user"
           }
 
-          Add-LocalGroupMember -Group "Administrators" -Member "rdpuser" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser" -ErrorAction SilentlyContinue
+          foreach ($group in @("Administrators","Remote Desktop Users")) {
+            try { Add-LocalGroupMember -Group $group -Member "rdpuser" -ErrorAction Stop } catch { }
+          }
 
           $terminalServer = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
-          Set-ItemProperty -Path $terminalServer -Name fDenyTSConnections -Value 0
+          New-ItemProperty -Path $terminalServer -Name fDenyTSConnections -PropertyType DWord -Value 0 -Force | Out-Null
 
           $rdpTcp = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpTcp -Name UserAuthentication -Value 1
-          Set-ItemProperty -Path $rdpTcp -Name SecurityLayer -Value 1
-          Set-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -Value 3
+          New-Item -Path $rdpTcp -Force | Out-Null
+          New-ItemProperty -Path $rdpTcp -Name UserAuthentication -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpTcp -Name SecurityLayer -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $rdpTcp -Name MinEncryptionLevel -PropertyType DWord -Value 3 -Force | Out-Null
 
           Set-Service -Name TermService -StartupType Automatic
-          Start-Service -Name TermService
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          if ((Get-Service -Name TermService).Status -ne "Running") { Start-Service -Name TermService }
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-          Write-Host "RDP configured for rdpuser."
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 3
+
+          if (-not (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue)) {
+            throw "RDP port 3389 is not listening."
+          }
+          Get-Service TermService | Select-Object Name,Status,StartType | Format-List
+          Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort,State,OwningProcess
+          Write-Host "RDP is ready."
 
       - name: Install and connect Tailscale
         shell: pwsh
@@ -182,10 +137,7 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           $ErrorActionPreference = "Stop"
-
-          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
-            throw "Missing GitHub Actions secret: TS_AUTHKEY"
-          }
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) { throw "Missing GitHub Actions secret: TS_AUTHKEY" }
 
           $installer = Join-Path $env:TEMP "tailscale-setup.exe"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $installer
@@ -193,31 +145,34 @@ jobs:
 
           $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
           if (-not (Test-Path $tailscale)) {
-            throw "Tailscale executable was not found."
+            $tailscale = Join-Path $env:ProgramFiles(x86) "Tailscale\tailscale.exe"
           }
+          if (-not (Test-Path $tailscale)) { throw "Tailscale executable was not found." }
 
           & $tailscale up --auth-key="$env:TS_AUTHKEY" --hostname="github-serverRd-${{ github.run_id }}" --accept-dns=false
-
           Start-Sleep -Seconds 5
-
           Write-Host "=== TAILSCALE IPv4 ==="
           & $tailscale ip -4
-
           Write-Host "=== TAILSCALE STATUS ==="
           & $tailscale status
 
-      - name: Verify low-overhead RDP state
+      - name: Final RDP connectivity check
         shell: pwsh
         run: |
           $ErrorActionPreference = "SilentlyContinue"
-
-          Write-Host "=== TAILSCALE PING ==="
           $tailscale = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          if (Test-Path $tailscale) { & $tailscale ping --c 5 --timeout 3s 100.102.42.28 }
+          if (-not (Test-Path $tailscale)) { $tailscale = Join-Path $env:ProgramFiles(x86) "Tailscale\tailscale.exe" }
+
+          Write-Host "=== TAILSCALE IPv4 ==="
+          if (Test-Path $tailscale) { & $tailscale ip -4 }
 
           Write-Host "=== RDP LISTENER ==="
-          Get-NetTCPConnection -LocalPort 3389 -State Listen |
-            Select-Object LocalAddress,LocalPort,State,OwningProcess
+          Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort,State,OwningProcess
+
+          Write-Host "=== FIREWALL RDP ==="
+          Get-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue |
+            Where-Object Enabled -eq "True" |
+            Select-Object DisplayName,Profile,Direction,Action | Format-Table -AutoSize
 
           Write-Host "=== CPU/RAM ==="
           $cs = Get-CimInstance Win32_ComputerSystem
@@ -229,37 +184,18 @@ jobs:
           } | Format-List
 
           Write-Host "=== GPU ==="
-          Get-CimInstance Win32_VideoController |
-            Select-Object Name, DriverVersion, VideoModeDescription |
-            Format-List
-
-          Write-Host "=== RDP POLICY ==="
-          Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" |
-            Select-Object fDisableWallpaper,fDisableFullWindowDrag,fDisableMenuAnims,UseWddmGraphicsDisplayDriver,UseRdpCompression,AVC444ModePreferred,AVCHardwareEncodePreferred,SelectTransport |
-            Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,VideoModeDescription,Status | Format-List
 
       - name: Keep RDP alive for 6 hours
         shell: pwsh
         run: |
-          Write-Host "ServerRd optimized Windows RDP is running."
+          Write-Host "ServerRd RDP is ready for 6 hours."
           Write-Host "RDP username: rdpuser"
-
           for ($i = 1; $i -le 360; $i++) {
-            $cpu = (Get-Counter '\\Processor(_Total)\\% Processor Time' -ErrorAction SilentlyContinue).CounterSamples.CookedValue
+            $cpuCounter = Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction SilentlyContinue
+            $cpu = if ($cpuCounter) { [math]::Round($cpuCounter.CounterSamples.CookedValue,1) } else { 0 }
             $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
             $free = if ($os) { [math]::Round($os.FreePhysicalMemory / 1MB, 1) } else { 0 }
-            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360 | CPU=$([math]::Round($cpu,1))% | FreeRAM=$free GB"
-            Start-Sleep -Seconds 60
-          }
-              } catch {
-                Write-Host "Roblox priority adjustment skipped: $($_.Exception.Message)"
-              }
-              $cpu = [math]::Round(($rbx | Measure-Object CPU -Sum).Sum, 1)
-              $ram = [math]::Round(($rbx.WorkingSet64 / 1MB), 0)
-              Write-Host "Roblox Studio: PID=$($rbx.Id) CPUSeconds=$cpu RAM_MB=$ram Priority=$($rbx.PriorityClass)"
-            } else {
-              Write-Host "Roblox Studio: not running"
-            }
-            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360"
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360 | CPU=$cpu% | FreeRAM=$free GB"
             Start-Sleep -Seconds 60
           }
