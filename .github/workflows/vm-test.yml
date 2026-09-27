@@ -29,6 +29,12 @@ jobs:
           Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, VideoProcessor, PNPDeviceID | Format-List
           Write-Host "=== RDP GRAPHICS CAPABILITIES ==="
           Get-CimInstance -Namespace root\cimv2\TerminalServices -ClassName Win32_TSGeneralSetting -ErrorAction SilentlyContinue | Select-Object TerminalName, PolicySourceGraphicsMode, PolicySourceColorDepth, ColorDepth | Format-List
+          Write-Host "=== DIRECTX ==="
+          if (Get-Command dxdiag -ErrorAction SilentlyContinue) {
+            $dx = Join-Path $env:TEMP "dxdiag.txt"
+            dxdiag /t $dx | Out-Null
+            Select-String -Path $dx -Pattern "Card name:|Display Memory:|Dedicated Memory:|Shared Memory:|Current Mode:" -Context 0,0
+          }
           Write-Host "=== NETWORK ADAPTER ==="
           Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object Name, InterfaceDescription, LinkSpeed | Format-List
 
@@ -255,6 +261,22 @@ jobs:
           Write-Host "RDP username: rdpuser"
 
           for ($i = 1; $i -le 360; $i++) {
+            $rbx = Get-Process -Name "RobloxStudioBeta" -ErrorAction SilentlyContinue
+            if ($rbx) {
+              try {
+                if ($rbx.PriorityClass -ne "AboveNormal") {
+                  $rbx.PriorityClass = "AboveNormal"
+                  Write-Host "Roblox Studio detected -> AboveNormal priority."
+                }
+              } catch {
+                Write-Host "Roblox priority adjustment skipped: $($_.Exception.Message)"
+              }
+              $cpu = [math]::Round(($rbx | Measure-Object CPU -Sum).Sum, 1)
+              $ram = [math]::Round(($rbx.WorkingSet64 / 1MB), 0)
+              Write-Host "Roblox Studio: PID=$($rbx.Id) CPUSeconds=$cpu RAM_MB=$ram Priority=$($rbx.PriorityClass)"
+            } else {
+              Write-Host "Roblox Studio: not running"
+            }
             Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive - minute $i/360"
             Start-Sleep -Seconds 60
           }
