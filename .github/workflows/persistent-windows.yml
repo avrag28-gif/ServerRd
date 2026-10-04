@@ -1,0 +1,239 @@
+name: ServerRd Persistent Windows Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Original session start timestamp; leave blank for a new session"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: write
+
+# This workflow is intentionally different from vm-test.yml:
+# - Azure owns ONE persistent Windows VM.
+# - The VM is hibernated between chained runs.
+# - Hibernation preserves RAM, so applications can resume in the same state.
+# - GitHub-hosted jobs only control Azure; the interactive Windows job runs on
+#   the self-hosted runner installed INSIDE the persistent VM.
+#
+# Required repository secrets:
+#   AZURE_CREDENTIALS  = Azure service-principal JSON for azure/login
+#   TS_AUTHKEY         = reusable Tailscale auth key
+#
+# Required repository variables:
+#   AZURE_RESOURCE_GROUP
+#   AZURE_VM_NAME
+#   RDP_DAYS            = session lifetime in days (default 7)
+#
+# The Windows VM must be registered as a self-hosted runner with labels:
+#   self-hosted, windows, serverRd
+# and must have Azure hibernation enabled.
+
+jobs:
+  resume-vm:
+    name: Resume persistent Windows VM
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Start or resume VM
+        shell: pwsh
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          VM: ${{ vars.AZURE_VM_NAME }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RG) -or [string]::IsNullOrWhiteSpace($env:VM)) {
+            throw "Set AZURE_RESOURCE_GROUP and AZURE_VM_NAME repository variables."
+          }
+
+          $state = az vm show -g $env:RG -n $env:VM -d --query powerState -o tsv
+          Write-Host "Current Azure VM state: $state"
+
+          if ($state -notmatch "running") {
+            Write-Host "Starting/resuming the persistent Windows VM..."
+            az vm start -g $env:RG -n $env:VM --only-show-errors
+          } else {
+            Write-Host "VM is already running."
+          }
+
+          for ($i = 1; $i -le 60; $i++) {
+            $state = az vm show -g $env:RG -n $env:VM -d --query powerState -o tsv
+            Write-Host "Power state: $state"
+            if ($state -match "running") { exit 0 }
+            Start-Sleep -Seconds 10
+          }
+
+          throw "VM did not reach running state."
+
+  wait-for-runner:
+    name: Wait for Windows runner
+    needs: resume-vm
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Wait until persistent runner is online
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(12)
+          while ((Get-Date) -lt $deadline) {
+            Write-Host "Waiting for labels: self-hosted, windows, serverRd..."
+            Start-Sleep -Seconds 10
+          }
+          # The next job itself is the authoritative runner check. This job
+          # exists only to make the workflow state readable in the UI.
+          Write-Host "Runner wait window elapsed; GitHub will keep the next job queued until it is online."
+
+  rdp:
+    name: Interactive Windows session
+    needs: wait-for-runner
+    runs-on: [self-hosted, windows, serverRd]
+    timeout-minutes: 360
+    env:
+      TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+    steps:
+      - name: Verify this is the persistent machine
+        shell: pwsh
+        run: |
+          Write-Host "COMPUTERNAME=$env:COMPUTERNAME"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, LastBootUpTime
+          Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, TotalPhysicalMemory
+
+      - name: Ensure Tailscale and RDP are ready
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $ts = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) {
+            $dir = "C:\ProgramData\Tailscale"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $installer = Join-Path $env:TEMP "tailscale-setup.exe"
+            Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $installer
+            Start-Process $installer -ArgumentList "/quiet" -Wait
+          }
+
+          $ts = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) { throw "Tailscale installation failed." }
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+            throw "Missing TS_AUTHKEY."
+          }
+
+          & $ts up --auth-key="$env:TS_AUTHKEY" --hostname="serverRd-persistent" --accept-dns=false --accept-routes=false
+
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-Service TermService -StartupType Automatic
+          Start-Service TermService
+
+          $ip = (& $ts ip -4 | Select-Object -First 1).Trim()
+          Write-Host "PERSISTENT_TAILSCALE_IP=$ip"
+
+          # Important: DO NOT disable hibernation here. That would destroy the
+          # exact RAM/application-state persistence this workflow is designed for.
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change standby-timeout-ac 0
+          powercfg /change hibernate-timeout-ac 0
+
+      - name: Keep the same Windows instance alive
+        shell: pwsh
+        run: |
+          Write-Host "Windows VM is persistent."
+          Write-Host "Installed applications, files, registry and settings remain on this VM."
+          Write-Host "When this job ends, the controller job will hibernate the VM."
+          Write-Host "Do not run shutdown/reboot commands manually if you need live application state preserved."
+
+          for ($i = 1; $i -le 320; $i++) {
+            if ($i -eq 1 -or $i % 10 -eq 0) {
+              $ts = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+              $ip = if (Test-Path $ts) { (& $ts ip -4 | Select-Object -First 1).Trim() } else { "unknown" }
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] minute $i/320 | Tailscale=$ip"
+            }
+            Start-Sleep -Seconds 60
+          }
+
+  hibernate-vm:
+    name: Save exact Windows state
+    needs: rdp
+    if: ${{ always() && needs.rdp.result != 'cancelled' }}
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Hibernate the persistent VM
+        shell: pwsh
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          VM: ${{ vars.AZURE_VM_NAME }}
+        run: |
+          Write-Host "Saving Windows VM memory/application state to storage..."
+          az vm deallocate -g $env:RG -n $env:VM --hibernate true --only-show-errors
+
+          for ($i = 1; $i -le 60; $i++) {
+            $state = az vm show -g $env:RG -n $env:VM -d --query powerState -o tsv
+            Write-Host "Power state: $state"
+            if ($state -match "hibernated") {
+              Write-Host "VM is hibernated. RAM/application state is preserved."
+              exit 0
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          throw "VM did not reach hibernated state."
+
+  chain:
+    name: Queue next session
+    needs: hibernate-vm
+    runs-on: windows-2025
+    steps:
+      - name: Dispatch next run automatically
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $days = 7.0
+          if ("${{ vars.RDP_DAYS }}") { $days = [double]"${{ vars.RDP_DAYS }}" }
+          if ($days -le 0) {
+            Write-Host "RDP_DAYS=0; chain stopped."
+            exit 0
+          }
+
+          $start = "${{ inputs.start }}"
+          if (-not $start) { $start = "${{ github.run_started_at }}" }
+          $started = [datetimeoffset]::Parse($start)
+          $elapsed = [datetimeoffset]::UtcNow - $started
+
+          if ($elapsed.TotalHours -ge (24 * $days)) {
+            Write-Host "Session duration reached."
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $body = @{
+            ref = "${{ github.ref_name }}"
+            inputs = @{ start = $started.ToString("o") }
+          } | ConvertTo-Json -Compress
+
+          Invoke-RestMethod -Method Post `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/persistent-windows.yml/dispatches" `
+            -Headers $headers -Body $body -ContentType "application/json"
+
+          Write-Host "Next run queued. It will resume the SAME hibernated Windows VM before using the self-hosted runner."
