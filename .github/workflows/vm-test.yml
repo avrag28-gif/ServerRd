@@ -27,6 +27,7 @@ jobs:
     #   Name: RDP_RUNNER   Value: a self-hosted label, or a larger runner label
     #   such as 'gpu-larger' / an Asia-region runner created through Azure
     #   private networking (Japan West is a supported region).
+    # Use RDP_RUNNER for a persistent self-hosted Windows VM; otherwise keep the GitHub-hosted fallback.
     runs-on: ${{ vars.RDP_RUNNER || 'windows-2025' }}
     timeout-minutes: 360
     env:
@@ -440,7 +441,8 @@ jobs:
           }
           if (-not (Test-Path $tailscale)) { throw "Tailscale executable was not found." }
 
-          & $tailscale up --auth-key="$env:TS_AUTHKEY" --hostname="github-serverRd-${{ github.run_id }}" --accept-dns=false --accept-routes=false
+          $hostname = if ($env:RUNNER_ENVIRONMENT -eq "self-hosted") { "serverRd-persistent" } else { "github-serverRd-${{ github.run_id }}" }
+          & $tailscale up --auth-key="$env:TS_AUTHKEY" --hostname="$hostname" --accept-dns=false --accept-routes=false
           Start-Sleep -Seconds 5
 
           Write-Host "=== TAILSCALE IPv4 ==="
@@ -820,4 +822,8 @@ jobs:
           Invoke-RestMethod -Method Post `
             -Uri "https://api.github.com/repos/$repo/actions/workflows/vm-test.yml/dispatches" `
             -Headers $headers -Body $body -ContentType "application/json"
-          Write-Host ("Chained the next run ({0:N1}h / {1:N0}h elapsed). New runner boots in ~3-5 minutes." -f $elapsed.TotalHours, (24 * $days))
+          if ("${{ runner.environment }}" -eq "self-hosted") {
+            Write-Host ("Chained next run: SAME persistent runner; it can wait offline through reboot." -f $elapsed.TotalHours, (24 * $days))
+          } else {
+            Write-Host ("Chained next run: NEW GitHub-hosted VM." -f $elapsed.TotalHours, (24 * $days))
+          }
