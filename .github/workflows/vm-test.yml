@@ -850,8 +850,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path $profileRoot,$registryRoot | Out-Null
 
           $sid = (Get-LocalUser -Name "rdpuser" -ErrorAction SilentlyContinue).SID.Value
-          if ($sid -and (Test-Path "HKU:\$sid")) { & reg.exe save "HKU\$sid" "$stateRoot\NTUSER.DAT" /y | Out-Null }
-          elseif (Test-Path "C:\Users\rdpuser\NTUSER.DAT") { Copy-Item "C:\Users\rdpuser\NTUSER.DAT" "$stateRoot\NTUSER.DAT" -Force }
+          $hiveLoaded = $false
+          if ($sid) {
+            & reg.exe query "HKU\$sid" 2>$null | Out-Null
+            $hiveLoaded = ($LASTEXITCODE -eq 0)
+          }
+          if ($hiveLoaded) {
+            & reg.exe save "HKU\$sid" "$stateRoot\NTUSER.DAT" /y | Out-Null
+            if (Test-Path "$stateRoot\NTUSER.DAT") { Write-Host "Captured loaded rdpuser hive with reg save." }
+          }
+          if (-not (Test-Path "$stateRoot\NTUSER.DAT") -and (Test-Path "C:\Users\rdpuser\NTUSER.DAT")) {
+            Copy-Item "C:\Users\rdpuser\NTUSER.DAT" "$stateRoot\NTUSER.DAT" -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$stateRoot\NTUSER.DAT") { Write-Host "Captured NTUSER.DAT from profile." }
+          }
 
           foreach ($dir in @("Desktop","Documents","Downloads","Pictures","Videos","Music","AppData\Roaming","AppData\Local")) {
             $src = "C:\Users\rdpuser\$dir"; $dst = Join-Path $profileRoot $dir
