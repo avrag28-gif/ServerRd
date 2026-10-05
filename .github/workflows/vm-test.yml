@@ -326,49 +326,6 @@ jobs:
           }
           Write-Host "Default user profile tuned for best performance."
 
-      - name: Restore previous Windows state
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $repo = "${{ github.repository }}"
-          $headers = @{
-            Authorization = "Bearer $env:GITHUB_TOKEN"
-            Accept = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2026-03-10"
-          }
-          $listing = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$repo/actions/artifacts?name=serverRd-state&per_page=100" -Headers $headers
-          $previous = $listing.artifacts | Where-Object { -not $_.expired -and $_.workflow_run.id -ne [int64]"${{ github.run_id }}" } | Sort-Object { [datetime]$_.created_at } -Descending | Select-Object -First 1
-          if (-not $previous) { Write-Host "No previous ServerRd state artifact. Starting clean."; exit 0 }
-          Write-Host ("Restoring checkpoint from run {0}" -f $previous.workflow_run.id)
-          $artifactZip = Join-Path $env:RUNNER_TEMP "serverRd-state-artifact.zip"
-          $extract = Join-Path $env:RUNNER_TEMP "serverRd-state-artifact"
-          $state = Join-Path $env:RUNNER_TEMP "serverRd-state"
-          Remove-Item $extract,$state -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $extract,$state | Out-Null
-          Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $previous.archive_download_url -OutFile $artifactZip
-          Expand-Archive -Path $artifactZip -DestinationPath $extract -Force
-          $stateZip = Get-ChildItem $extract -Filter "serverRd-state.zip" -Recurse | Select-Object -First 1
-          if (-not $stateZip) { throw "serverRd-state.zip missing from checkpoint artifact." }
-          Expand-Archive -Path $stateZip.FullName -DestinationPath $state -Force
-
-          Stop-Service TermService -Force -ErrorAction SilentlyContinue
-          $profile = "C:\Users\rdpuser"
-          New-Item -ItemType Directory -Force -Path $profile | Out-Null
-          if (Test-Path "$state\NTUSER.DAT") { Copy-Item "$state\NTUSER.DAT" "$profile\NTUSER.DAT" -Force }
-          foreach ($dir in @("Desktop","Documents","Downloads","Pictures","Videos","Music","AppData\Roaming","AppData\Local\Packages")) {
-            $src = Join-Path $state "profile\$dir"; $dst = Join-Path $profile $dir
-            if (Test-Path $src) { New-Item -ItemType Directory -Force -Path $dst | Out-Null; robocopy $src $dst /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null }
-          }
-          foreach ($regFile in (Get-ChildItem "$state\registry" -Filter *.reg -ErrorAction SilentlyContinue)) { & reg.exe import $regFile.FullName | Out-Null }
-          $wingetFile = "$state\winget.json"
-          if ((Test-Path $wingetFile) -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Write-Host "Restoring WinGet applications..."
-            & winget.exe import --import-file $wingetFile --ignore-unavailable --accept-package-agreements --accept-source-agreements --disable-interactivity --no-upgrade
-          }
-          Start-Service TermService -ErrorAction SilentlyContinue
-          Write-Host "Checkpoint restored. Live RAM/process state is intentionally not claimed."
       - name: Configure RDP
         shell: pwsh
         env:
@@ -459,6 +416,53 @@ jobs:
           Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort,State,OwningProcess
           Write-Host "RDP is ready."
 
+      - name: Restore previous Windows state
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repo = "${{ github.repository }}"
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2026-03-10"
+          }
+          $listing = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$repo/actions/artifacts?name=serverRd-state&per_page=100" -Headers $headers
+          $previous = $listing.artifacts | Where-Object { -not $_.expired -and $_.workflow_run.id -ne [int64]"${{ github.run_id }}" } | Sort-Object { [datetime]$_.created_at } -Descending | Select-Object -First 1
+          if (-not $previous) { Write-Host "No previous ServerRd state artifact. Starting clean."; exit 0 }
+          Write-Host ("Restoring checkpoint from run {0}" -f $previous.workflow_run.id)
+          $artifactZip = Join-Path $env:RUNNER_TEMP "serverRd-state-artifact.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "serverRd-state-artifact"
+          $state = Join-Path $env:RUNNER_TEMP "serverRd-state"
+          Remove-Item $extract,$state -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extract,$state | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $previous.archive_download_url -OutFile $artifactZip
+          Expand-Archive -Path $artifactZip -DestinationPath $extract -Force
+          $stateZip = Get-ChildItem $extract -Filter "serverRd-state.zip" -Recurse | Select-Object -First 1
+          if (-not $stateZip) { throw "serverRd-state.zip missing from checkpoint artifact." }
+          Expand-Archive -Path $stateZip.FullName -DestinationPath $state -Force
+
+          Stop-Service TermService -Force -ErrorAction SilentlyContinue
+          $profile = "C:\Users\rdpuser"
+          New-Item -ItemType Directory -Force -Path $profile | Out-Null
+          if (Test-Path "$state\NTUSER.DAT") { Copy-Item "$state\NTUSER.DAT" "$profile\NTUSER.DAT" -Force }
+          foreach ($dir in @("Desktop","Documents","Downloads","Pictures","Videos","Music","AppData\Roaming","AppData\Local\Packages")) {
+            $src = Join-Path $state "profile\$dir"; $dst = Join-Path $profile $dir
+            if (Test-Path $src) { New-Item -ItemType Directory -Force -Path $dst | Out-Null; robocopy $src $dst /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null }
+          }
+          foreach ($regFile in (Get-ChildItem "$state\registry" -Filter *.reg -ErrorAction SilentlyContinue)) { & reg.exe import $regFile.FullName | Out-Null }
+          $wingetFile = "$state\winget.json"
+          if ((Test-Path $wingetFile) -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Write-Host "Restoring WinGet applications..."
+            & winget.exe import --import-file $wingetFile --ignore-unavailable --accept-package-agreements --accept-source-agreements --disable-interactivity --no-upgrade
+          }
+          Start-Service TermService -ErrorAction SilentlyContinue
+          if (Test-Path "C:\Users\rdpuser") {
+            Write-Host "Restored profile contents:"
+            Get-ChildItem "C:\Users\rdpuser" -Force -ErrorAction SilentlyContinue | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize
+          }
+          Write-Host "Checkpoint restored. Live RAM/process state is intentionally not claimed."
       - name: Verify at least one transport is configured
         shell: pwsh
         run: |
@@ -819,9 +823,18 @@ jobs:
           if ($sid -and (Test-Path "HKU:\$sid")) { & reg.exe save "HKU\$sid" "$stateRoot\NTUSER.DAT" /y | Out-Null }
           elseif (Test-Path "C:\Users\rdpuser\NTUSER.DAT") { Copy-Item "C:\Users\rdpuser\NTUSER.DAT" "$stateRoot\NTUSER.DAT" -Force }
 
-          foreach ($dir in @("Desktop","Documents","Downloads","Pictures","Videos","Music","AppData\Roaming","AppData\Local\Packages")) {
+          foreach ($dir in @("Desktop","Documents","Downloads","Pictures","Videos","Music","AppData\Roaming","AppData\Local")) {
             $src = "C:\Users\rdpuser\$dir"; $dst = Join-Path $profileRoot $dir
-            if (Test-Path $src) { New-Item -ItemType Directory -Force -Path $dst | Out-Null; robocopy $src $dst /E /XD "$src\Temp" "$src\Cache" "$src\Caches" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null }
+            if (Test-Path $src) {
+              New-Item -ItemType Directory -Force -Path $dst | Out-Null
+              robocopy $src $dst /E /XD "$src\Temp" "$src\Cache" "$src\Caches" "$src\Microsoft\Edge\User Data\Default\Cache" "$src\Microsoft\Edge\User Data\Default\Code Cache" "$src\Microsoft\Edge\User Data\Default\GPUCache" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+            }
+          }
+          if (Test-Path "C:\Users\rdpuser") {
+            Write-Host "Checkpoint profile root exists."
+            Get-ChildItem "C:\Users\rdpuser" -Force -ErrorAction SilentlyContinue | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize
+          } else {
+            Write-Warning "C:\Users\rdpuser does not exist at checkpoint time; no user profile files can be captured."
           }
 
           $systemKeys = @(
