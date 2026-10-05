@@ -878,6 +878,8 @@ jobs:
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          START_INPUT: ${{ inputs.start }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           $ErrorActionPreference = "Stop"
           $repo = "${{ github.repository }}"
@@ -892,12 +894,20 @@ jobs:
           }
 
           # The original start time survives across chained runs via the input.
-          $start = "${{ inputs.start }}"
-          if (-not $start) { $start = "${{ github.run_started_at }}" }
+          # Read GitHub expressions through environment variables so an empty
+          # workflow_dispatch input never becomes Parse("") in PowerShell.
+          $start = [string]$env:START_INPUT
+          if ([string]::IsNullOrWhiteSpace($start)) {
+            $start = [string]$env:RUN_STARTED_AT
+          }
           try {
-            $started = [datetimeoffset]::Parse($start, [Globalization.CultureInfo]::InvariantCulture)
+            $started = [datetimeoffset]::Parse(
+              $start,
+              [Globalization.CultureInfo]::InvariantCulture,
+              [Globalization.DateTimeStyles]::RoundtripKind
+            )
           } catch {
-            $started = [datetimeoffset]::Parse("${{ github.run_started_at }}")
+            throw "Invalid session start timestamp: '$start'"
           }
           $elapsed = [datetimeoffset]::UtcNow - $started
           if ($elapsed.TotalHours -ge (24 * $days)) {
